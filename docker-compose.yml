@@ -1,0 +1,28 @@
+name: haocun-relay
+
+services:
+  haocun-relay:
+    container_name: haocun-relay
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    ports:
+      - "${PORT:-8787}:8787"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/api/public/catalog').then((res)=>process.exit(res.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

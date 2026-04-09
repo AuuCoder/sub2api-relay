@@ -1,0 +1,45 @@
+[
+  {
+    "id": "claude-premium-1",
+    "name": "Claude Premium 1",
+    "platform": "anthropic",
+    "baseUrl": "https://api.anthropic.com",
+    "apiKey": "sk-ant-your-key",
+    "groups": ["premium"],
+    "models": ["claude-sonnet-4-5", "claude-opus-4-1"],
+    "headers": {
+      "anthropic-version": "2023-06-01"
+    },
+    "priority": 100
+  },
+  {
+    "id": "openai-premium-1",
+    "name": "OpenAI Premium 1",
+    "platform": "openai",
+    "baseUrl": "https://api.openai.com",
+    "apiKey": "sk-your-openai-key",
+    "groups": ["premium"],
+    "models": ["gpt-5", "gpt-5-mini", "gpt-5.2", "gpt-5-codex"],
+    "priority": 100
+  },
+  {
+    "id": "gemini-premium-1",
+    "name": "Gemini Premium 1",
+    "platform": "gemini",
+    "baseUrl": "https://generativelanguage.googleapis.com",
+    "apiKey": "AIza-your-gemini-key",
+    "groups": ["premium"],
+    "models": ["gemini-2.5-pro", "gemini-2.5-flash"],
+    "priority": 100
+  },
+  {
+    "id": "antigravity-premium-1",
+    "name": "Antigravity Premium 1",
+    "platform": "antigravity",
+    "baseUrl": "https://your-antigravity-upstream.example.com",
+    "apiKey": "ag-your-key",
+    "groups": ["premium"],
+    "models": ["claude-sonnet-4-5"],
+    "priority": 100
+  }
+]

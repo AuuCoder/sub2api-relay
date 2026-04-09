@@ -1,0 +1,17 @@
+node_modules/
+.npm-cache/
+dist/
+coverage/
+tmp/
+*.log
+
+.DS_Store
+.env
+.env.*
+!.env.example
+
+data/db.json
+data/gateway-accounts.json
+
+.asxs.pretty.js
+zzztest.txt

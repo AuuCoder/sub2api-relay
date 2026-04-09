@@ -1,0 +1,116 @@
+<svg width="1240" height="1240" viewBox="0 0 1240 1240" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="72" y1="56" x2="1168" y2="1184" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#08111F"/>
+      <stop offset="0.48" stop-color="#0E1E33"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <radialGradient id="glowOrange" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(1015 214) rotate(130.18) scale(526.709 432.87)">
+      <stop stop-color="#FF8B38" stop-opacity="0.92"/>
+      <stop offset="1" stop-color="#FF8B38" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowCyan" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(252 1016) rotate(35.77) scale(506.969 344.162)">
+      <stop stop-color="#20D8C7" stop-opacity="0.78"/>
+      <stop offset="1" stop-color="#20D8C7" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="panelStroke" x1="254" y1="228" x2="974" y2="1016" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.06"/>
+    </linearGradient>
+    <linearGradient id="chipOrange" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#FFAA57"/>
+      <stop offset="1" stop-color="#FF6A2A"/>
+    </linearGradient>
+    <linearGradient id="chipCyan" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#4CF6E8"/>
+      <stop offset="1" stop-color="#1EB3C8"/>
+    </linearGradient>
+    <filter id="softShadow" x="198" y="172" width="844" height="900" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="18"/>
+      <feGaussianBlur stdDeviation="28"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.0117647 0 0 0 0 0.0470588 0 0 0 0 0.117647 0 0 0 0.42 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+    </filter>
+  </defs>
+
+  <rect width="1240" height="1240" rx="52" fill="url(#bg)"/>
+  <rect width="1240" height="1240" rx="52" fill="url(#glowOrange)"/>
+  <rect width="1240" height="1240" rx="52" fill="url(#glowCyan)"/>
+
+  <g opacity="0.12">
+    <path d="M84 181H1156" stroke="white" stroke-width="1"/>
+    <path d="M84 325H1156" stroke="white" stroke-width="1"/>
+    <path d="M84 469H1156" stroke="white" stroke-width="1"/>
+    <path d="M84 613H1156" stroke="white" stroke-width="1"/>
+    <path d="M84 757H1156" stroke="white" stroke-width="1"/>
+    <path d="M84 901H1156" stroke="white" stroke-width="1"/>
+    <path d="M84 1045H1156" stroke="white" stroke-width="1"/>
+    <path d="M192 96V1144" stroke="white" stroke-width="1"/>
+    <path d="M384 96V1144" stroke="white" stroke-width="1"/>
+    <path d="M576 96V1144" stroke="white" stroke-width="1"/>
+    <path d="M768 96V1144" stroke="white" stroke-width="1"/>
+    <path d="M960 96V1144" stroke="white" stroke-width="1"/>
+  </g>
+
+  <g filter="url(#softShadow)">
+    <rect x="254" y="228" width="732" height="788" rx="34" fill="#0B1321" fill-opacity="0.86"/>
+    <rect x="254.75" y="228.75" width="730.5" height="786.5" rx="33.25" stroke="url(#panelStroke)" stroke-width="1.5"/>
+  </g>
+
+  <rect x="302" y="274" width="132" height="40" rx="20" fill="#162338"/>
+  <circle cx="326" cy="294" r="5" fill="#FF6A2A"/>
+  <circle cx="344" cy="294" r="5" fill="#FFD166"/>
+  <circle cx="362" cy="294" r="5" fill="#20D8C7"/>
+  <text x="462" y="302" fill="#9DB0C8" font-size="22" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif" letter-spacing="2">CODING ASSISTANT</text>
+
+  <text x="302" y="434" fill="white" font-size="112" font-weight="700" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">Codex</text>
+  <text x="302" y="548" fill="#FF9F57" font-size="126" font-weight="800" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">满血版</text>
+  <text x="302" y="612" fill="#D7E1ED" font-size="35" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif" letter-spacing="1">
+    开发问答 · 写码调试 · 长对话更顺滑
+  </text>
+
+  <g>
+    <rect x="302" y="674" width="186" height="58" rx="18" fill="url(#chipOrange)"/>
+    <text x="395" y="711" text-anchor="middle" fill="#09111D" font-size="28" font-weight="700" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">高性能</text>
+
+    <rect x="504" y="674" width="186" height="58" rx="18" fill="#162338"/>
+    <rect x="505" y="675" width="184" height="56" rx="17" stroke="#FFFFFF" stroke-opacity="0.12" stroke-width="2"/>
+    <text x="597" y="711" text-anchor="middle" fill="#EAF2F8" font-size="28" font-weight="700" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">稳定调用</text>
+
+    <rect x="706" y="674" width="220" height="58" rx="18" fill="url(#chipCyan)"/>
+    <text x="816" y="711" text-anchor="middle" fill="#061218" font-size="28" font-weight="700" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">开发者向</text>
+  </g>
+
+  <g opacity="0.96">
+    <rect x="302" y="790" width="636" height="176" rx="26" fill="#0E1829"/>
+    <rect x="302.75" y="790.75" width="634.5" height="174.5" rx="25.25" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="1.5"/>
+
+    <text x="338" y="842" fill="#8EA5C2" font-size="24" font-family="JetBrains Mono, Menlo, Monaco, Consolas, monospace">FEATURES</text>
+    <text x="338" y="892" fill="#F4F7FA" font-size="34" font-weight="700" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">支持 5.4 满血服务</text>
+
+    <text x="338" y="936" fill="#C3D0DF" font-size="28" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">• 可直拍｜24 小时自动发货</text>
+    <text x="338" y="974" fill="#C3D0DF" font-size="28" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">• 支持 Code / CLI / Cursor / VS Code</text>
+  </g>
+
+  <g>
+    <rect x="838" y="348" width="168" height="168" rx="32" fill="#101A2A"/>
+    <rect x="838.75" y="348.75" width="166.5" height="166.5" rx="31.25" stroke="#FFFFFF" stroke-opacity="0.12" stroke-width="1.5"/>
+    <path d="M893 397L862 431L893 465" stroke="#FF9F57" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M950 397L981 431L950 465" stroke="#20D8C7" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M910 486H944" stroke="white" stroke-opacity="0.8" stroke-width="14" stroke-linecap="round"/>
+  </g>
+
+  <g opacity="0.9">
+    <rect x="854" y="618" width="214" height="56" rx="18" fill="#111D2E"/>
+    <rect x="854.75" y="618.75" width="212.5" height="54.5" rx="17.25" stroke="#FFFFFF" stroke-opacity="0.09" stroke-width="1.5"/>
+    <text x="884" y="655" fill="#ECF3F8" font-size="28" font-weight="700" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">FULL POWER</text>
+  </g>
+
+  <g opacity="0.8">
+    <text x="304" y="1098" fill="#7D92AC" font-size="26" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif">稳定流畅 · 配置简单 · 全程售后</text>
+  </g>
+</svg>
