@@ -2,20 +2,21 @@ import "./env";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type {
-  AdminUser,
-  ApiKey,
-  Cdk,
-  DailyResetMode,
-  Db,
-  LimitHistoryRow,
-  LimitHistorySnapshot,
-  Order,
-  RechargeMode,
-  SiteSettings,
-  Sub2ApiBinding,
-  Template,
-  UsageRecord
+import {
+  DEFAULT_CONCURRENT_SESSIONS,
+  type AdminUser,
+  type ApiKey,
+  type Cdk,
+  type DailyResetMode,
+  type Db,
+  type LimitHistoryRow,
+  type LimitHistorySnapshot,
+  type Order,
+  type RechargeMode,
+  type SiteSettings,
+  type Sub2ApiBinding,
+  type Template,
+  type UsageRecord
 } from "./types";
 
 const dataDir = path.resolve(process.cwd(), "data");
@@ -129,7 +130,7 @@ function defaultSiteSettings(): SiteSettings {
   return {
     title: "HAOCUN",
     appEnv: process.env.NODE_ENV ?? "development",
-    remoteWebUrl: process.env.PUBLIC_BASE_URL ?? "http://localhost:8787",
+    remoteWebUrl: process.env.PUBLIC_BASE_URL ?? "https://cdk.muyuai.top",
     qqGroupText: "联系管理员或加入交流群获取正式套餐：",
     qqGroupUrl: "https://qm.qq.com/q/c8uV3U5jHO",
     qqGroupQrcodeAvailable: true,
@@ -248,7 +249,10 @@ function normalizeTemplate(raw: any, index: number): Template {
     content: typeof raw?.content === "string" ? raw.content : "",
     durationDays: asNumber(raw?.durationDays ?? raw?.duration_days, null),
     rpm: asNumber(raw?.rpm, null),
-    concurrentSessions: asNumber(raw?.concurrentSessions ?? raw?.concurrent_sessions, null),
+    concurrentSessions: asNumber(
+      raw?.concurrentSessions ?? raw?.concurrent_sessions,
+      DEFAULT_CONCURRENT_SESSIONS
+    ),
     dailyQuotaUsd: asNumber(raw?.dailyQuotaUsd ?? raw?.daily_quota_usd, null),
     weeklyQuotaUsd: asNumber(raw?.weeklyQuotaUsd ?? raw?.weekly_quota_usd, null),
     monthlyQuotaUsd: asNumber(raw?.monthlyQuotaUsd ?? raw?.monthly_quota_usd, null),
@@ -432,14 +436,24 @@ function normalizeUsage(raw: any, index: number): UsageRecord {
     statusCode: asNumber(raw?.statusCode ?? raw?.status_code, null),
     createdAt,
     durationMs: asNumber(raw?.durationMs ?? raw?.duration_ms, 0) ?? 0,
+    ttfbMs: asNumber(raw?.ttfbMs ?? raw?.ttfb_ms, null),
     inputTokens: asNumber(raw?.inputTokens ?? raw?.input_tokens, null),
     outputTokens: asNumber(raw?.outputTokens ?? raw?.output_tokens, null),
+    cacheReadInputTokens: asNumber(raw?.cacheReadInputTokens ?? raw?.cache_read_input_tokens, null),
+    cacheCreationInputTokens: asNumber(raw?.cacheCreationInputTokens ?? raw?.cache_creation_input_tokens, null),
     totalTokens: asNumber(raw?.totalTokens ?? raw?.total_tokens, null),
+    costUsd: asNumber(raw?.costUsd ?? raw?.cost_usd, null),
     estimatedCostUsd: asNumber(raw?.estimatedCostUsd ?? raw?.estimated_cost_usd, null),
     requestId: typeof raw?.requestId === "string" ? raw.requestId : raw?.request_id ?? makeId("req"),
     clientKey: typeof raw?.clientKey === "string" ? raw.clientKey : raw?.client_key ?? "-",
     sessionId: typeof raw?.sessionId === "string" ? raw.sessionId : raw?.session_id ?? null,
-    retryCount: asNumber(raw?.retryCount ?? raw?.retry_count, null)
+    retryCount: asNumber(raw?.retryCount ?? raw?.retry_count, null),
+    costSource:
+      raw?.costSource === "actual" || raw?.cost_source === "actual"
+        ? "actual"
+        : raw?.costSource === "estimated" || raw?.cost_source === "estimated"
+          ? "estimated"
+          : null
   };
 }
 
@@ -1168,7 +1182,7 @@ export function createTemplate(input: {
     content: input.content ?? "",
     durationDays: input.durationDays ?? null,
     rpm: input.rpm ?? null,
-    concurrentSessions: input.concurrentSessions ?? null,
+    concurrentSessions: input.concurrentSessions ?? DEFAULT_CONCURRENT_SESSIONS,
     dailyQuotaUsd: input.dailyQuotaUsd ?? null,
     weeklyQuotaUsd: input.weeklyQuotaUsd ?? null,
     monthlyQuotaUsd: input.monthlyQuotaUsd ?? null,
@@ -1322,8 +1336,12 @@ function isWithinCurrentDailyWindow(iso: string, mode: DailyResetMode, dailyRese
   return createdAt >= getCurrentFixedResetWindowStart(dailyResetTime);
 }
 
+function getUsageCost(item: Pick<UsageRecord, "costUsd" | "estimatedCostUsd">) {
+  return item.costUsd ?? item.estimatedCostUsd ?? 0;
+}
+
 function sumCost(records: UsageRecord[]) {
-  return Number(records.reduce((sum, item) => sum + (item.estimatedCostUsd ?? 0), 0).toFixed(6));
+  return Number(records.reduce((sum, item) => sum + getUsageCost(item), 0).toFixed(6));
 }
 
 function sumTokens(records: UsageRecord[], key: "inputTokens" | "outputTokens" | "totalTokens") {
@@ -1518,14 +1536,19 @@ export function deleteChildApiKey(db: Db, apiKeyId: string) {
 
 export function recordUsage(
   db: Db,
-  input: Omit<UsageRecord, "id" | "createdAt"> & { estimatedCostUsd?: number | null }
+  input: Omit<UsageRecord, "id" | "createdAt">
 ) {
   const createdAt = nowIso();
   const usage: UsageRecord = {
     id: makeId("use"),
     createdAt,
     ...input,
-    estimatedCostUsd: input.estimatedCostUsd ?? null
+    costUsd: input.costUsd ?? null,
+    estimatedCostUsd: input.estimatedCostUsd ?? null,
+    costSource: input.costSource ?? null,
+    ttfbMs: input.ttfbMs ?? null,
+    cacheReadInputTokens: input.cacheReadInputTokens ?? null,
+    cacheCreationInputTokens: input.cacheCreationInputTokens ?? null
   };
   db.usage.unshift(usage);
 
@@ -1533,7 +1556,7 @@ export function recordUsage(
   if (cdk) {
     cdk.usageCount += 1;
     cdk.lastUsedAt = createdAt;
-    cdk.totalCostUsd = Number((cdk.totalCostUsd + (usage.estimatedCostUsd ?? 0)).toFixed(6));
+    cdk.totalCostUsd = Number((cdk.totalCostUsd + getUsageCost(usage)).toFixed(6));
   }
 
   return usage;

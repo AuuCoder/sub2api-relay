@@ -2,7 +2,8 @@ import "./env";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import cookieParser from "cookie-parser";
 import cors from "cors";
@@ -60,7 +61,7 @@ import {
   updateChildApiKey,
   updateDb
 } from "./store";
-import type { Cdk, Db, Order, OrderMode, RechargeMode, SiteSettings, Template } from "./types";
+import { DEFAULT_CONCURRENT_SESSIONS, type Cdk, type Db, type Order, type OrderMode, type RechargeMode, type SiteSettings, type Template } from "./types";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -634,11 +635,302 @@ function getProxyPayload(req: Request) {
   }
 }
 
+function asFiniteNumber(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function firstFiniteNumber(...values: unknown[]) {
+  for (const value of values) {
+    const parsed = asFiniteNumber(value);
+    if (parsed != null) return parsed;
+  }
+  return null;
+}
+
 function estimateCostUsd(inputTokens: number | null, outputTokens: number | null) {
   if (inputTokens == null && outputTokens == null) return null;
   const input = inputTokens ?? 0;
   const output = outputTokens ?? 0;
   return Number((input / 1_000_000 + output / 500_000).toFixed(6));
+}
+
+type ResolvedUsageMetrics = {
+  model: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadInputTokens: number | null;
+  cacheCreationInputTokens: number | null;
+  totalTokens: number | null;
+  costUsd: number | null;
+  estimatedCostUsd: number | null;
+  costSource: "actual" | "estimated" | null;
+};
+
+function getPayloadUsageObject(payload: any) {
+  return (
+    payload?.usage ??
+    payload?.usageMetadata ??
+    payload?.usage_metadata ??
+    payload?.response?.usage ??
+    payload?.response?.usageMetadata ??
+    payload?.response?.usage_metadata ??
+    payload?.message?.usage ??
+    {}
+  );
+}
+
+function resolveResponseModel(payload: any, fallback: string | null) {
+  const candidates = [
+    payload?.model,
+    payload?.model_name,
+    payload?.modelName,
+    payload?.response?.model,
+    payload?.message?.model,
+    payload?.modelVersion
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+
+  return fallback;
+}
+
+function resolveUsageShape(payload: any) {
+  const usage = getPayloadUsageObject(payload);
+
+  const inputTokens = firstFiniteNumber(
+    usage.prompt_tokens,
+    usage.input_tokens,
+    usage.inputTokens,
+    usage.promptTokens,
+    usage.input,
+    usage.promptTokenCount,
+    usage.prompt_token_count,
+    payload?.prompt_tokens,
+    payload?.input_tokens
+  );
+  const outputTokens = firstFiniteNumber(
+    usage.completion_tokens,
+    usage.output_tokens,
+    usage.outputTokens,
+    usage.completionTokens,
+    usage.output,
+    usage.candidatesTokenCount,
+    usage.candidates_token_count,
+    payload?.completion_tokens,
+    payload?.output_tokens
+  );
+  const explicitCacheReadInputTokens = firstFiniteNumber(
+    usage.cache_read_input_tokens,
+    usage.cacheReadInputTokens,
+    usage.cache_read_tokens,
+    usage.cacheReadTokens,
+    payload?.cache_read_input_tokens,
+    payload?.cache_read_tokens
+  );
+  const cacheReadInputTokens =
+    explicitCacheReadInputTokens ??
+    firstFiniteNumber(
+      usage.prompt_tokens_details?.cached_tokens,
+      usage.input_tokens_details?.cached_tokens,
+      usage.cachedContentTokenCount,
+      usage.cached_content_token_count
+    );
+  const cacheCreationInputTokens = firstFiniteNumber(
+    usage.cache_creation_input_tokens,
+    usage.cacheCreationInputTokens,
+    usage.cache_creation_tokens,
+    usage.cacheCreationTokens,
+    usage.input_tokens_details?.cache_creation_tokens,
+    payload?.cache_creation_input_tokens,
+    payload?.cache_creation_tokens
+  );
+  const totalTokens =
+    firstFiniteNumber(usage.total_tokens, usage.totalTokens, usage.totalTokenCount, usage.total_token_count, payload?.total_tokens) ??
+    (inputTokens == null && outputTokens == null
+      ? null
+      : (inputTokens ?? 0) +
+        (outputTokens ?? 0) +
+        ((explicitCacheReadInputTokens ?? 0) + (cacheCreationInputTokens ?? 0)));
+
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadInputTokens,
+    cacheCreationInputTokens,
+    totalTokens
+  };
+}
+
+function resolveCostShape(
+  payload: any,
+  usage: Pick<ResolvedUsageMetrics, "inputTokens" | "outputTokens">
+) {
+  const usagePayload = getPayloadUsageObject(payload);
+  const costUsd = firstFiniteNumber(
+    usagePayload.actual_cost,
+    usagePayload.actualCost,
+    usagePayload.total_cost,
+    usagePayload.totalCost,
+    usagePayload.cost_usd,
+    usagePayload.costUsd,
+    usagePayload.cost,
+    payload?.actual_cost,
+    payload?.actualCost,
+    payload?.total_cost,
+    payload?.totalCost,
+    payload?.cost_usd,
+    payload?.costUsd,
+    payload?.cost
+  );
+  const explicitEstimate = firstFiniteNumber(
+    usagePayload.estimated_cost_usd,
+    usagePayload.estimatedCostUsd,
+    payload?.estimated_cost_usd,
+    payload?.estimatedCostUsd
+  );
+  const estimatedCostUsd = explicitEstimate ?? estimateCostUsd(usage.inputTokens, usage.outputTokens);
+
+  return {
+    costUsd,
+    estimatedCostUsd,
+    costSource: costUsd != null ? "actual" : estimatedCostUsd != null ? "estimated" : null
+  } satisfies Pick<ResolvedUsageMetrics, "costUsd" | "estimatedCostUsd" | "costSource">;
+}
+
+function resolveResponseMetrics(payload: any, fallbackModel: string | null): ResolvedUsageMetrics {
+  const usage = resolveUsageShape(payload);
+  const cost = resolveCostShape(payload, usage);
+
+  return {
+    model: resolveResponseModel(payload, fallbackModel),
+    ...usage,
+    ...cost
+  };
+}
+
+function emptyResolvedUsageMetrics(model: string | null): ResolvedUsageMetrics {
+  return {
+    model,
+    inputTokens: null,
+    outputTokens: null,
+    cacheReadInputTokens: null,
+    cacheCreationInputTokens: null,
+    totalTokens: null,
+    costUsd: null,
+    estimatedCostUsd: null,
+    costSource: null
+  };
+}
+
+function mergeUsageMetric(current: number | null, next: number | null) {
+  if (next == null) return current;
+  if (current == null) return next;
+  return Math.max(current, next);
+}
+
+function mergeResolvedUsageMetrics(
+  current: ResolvedUsageMetrics,
+  next: Partial<ResolvedUsageMetrics>
+): ResolvedUsageMetrics {
+  return {
+    model: next.model ?? current.model,
+    inputTokens: mergeUsageMetric(current.inputTokens, next.inputTokens ?? null),
+    outputTokens: mergeUsageMetric(current.outputTokens, next.outputTokens ?? null),
+    cacheReadInputTokens: mergeUsageMetric(current.cacheReadInputTokens, next.cacheReadInputTokens ?? null),
+    cacheCreationInputTokens: mergeUsageMetric(current.cacheCreationInputTokens, next.cacheCreationInputTokens ?? null),
+    totalTokens: mergeUsageMetric(current.totalTokens, next.totalTokens ?? null),
+    costUsd: next.costUsd ?? current.costUsd,
+    estimatedCostUsd: next.estimatedCostUsd ?? current.estimatedCostUsd,
+    costSource: next.costSource ?? current.costSource
+  };
+}
+
+function applySseDataLines(
+  buffer: string,
+  onPayload: (payload: any) => void,
+  flush = false
+) {
+  let nextBuffer = buffer;
+  let lineBreakIndex = nextBuffer.indexOf("\n");
+
+  while (lineBreakIndex >= 0) {
+    let line = nextBuffer.slice(0, lineBreakIndex);
+    nextBuffer = nextBuffer.slice(lineBreakIndex + 1);
+    if (line.endsWith("\r")) line = line.slice(0, -1);
+
+    if (line.startsWith("data:")) {
+      const payloadText = line.slice(5).trim();
+      if (payloadText && payloadText !== "[DONE]") {
+        try {
+          onPayload(JSON.parse(payloadText));
+        } catch {
+          // Ignore non-JSON SSE data frames.
+        }
+      }
+    }
+
+    lineBreakIndex = nextBuffer.indexOf("\n");
+  }
+
+  if (flush) {
+    const pending = nextBuffer.trim();
+    if (pending.startsWith("data:")) {
+      const payloadText = pending.slice(5).trim();
+      if (payloadText && payloadText !== "[DONE]") {
+        try {
+          onPayload(JSON.parse(payloadText));
+        } catch {
+          // Ignore trailing non-JSON frames.
+        }
+      }
+    }
+    return "";
+  }
+
+  return nextBuffer;
+}
+
+function buildForwardRequestBody(
+  requestPath: string,
+  method: string,
+  rawBody: Buffer,
+  jsonBody: Record<string, unknown> | null
+) {
+  if (["GET", "HEAD"].includes(method.toUpperCase()) || rawBody.length === 0 || !jsonBody) {
+    return rawBody;
+  }
+
+  const shouldInjectUsage =
+    ["/v1/chat/completions", "/chat/completions"].includes(requestPath) && jsonBody.stream === true;
+
+  if (!shouldInjectUsage) {
+    return rawBody;
+  }
+
+  const rawStreamOptions = jsonBody.stream_options;
+  const streamOptions =
+    rawStreamOptions && typeof rawStreamOptions === "object" && !Array.isArray(rawStreamOptions)
+      ? rawStreamOptions as Record<string, unknown>
+      : {};
+
+  if (streamOptions.include_usage === true) {
+    return rawBody;
+  }
+
+  return Buffer.from(
+    JSON.stringify({
+      ...jsonBody,
+      stream_options: {
+        ...streamOptions,
+        include_usage: true
+      }
+    })
+  );
 }
 
 function computeNextFixedResetAt(dailyResetTime: string) {
@@ -655,34 +947,6 @@ function computeNextFixedResetAt(dailyResetTime: string) {
     next.setDate(next.getDate() + 1);
   }
   return next.toISOString();
-}
-
-function resolveUsageShape(payload: any) {
-  const usage = payload?.usage ?? {};
-  const inputTokens = Number(
-    usage.prompt_tokens ??
-      usage.input_tokens ??
-      usage.inputTokens ??
-      usage.promptTokens ??
-      usage.input ??
-      usage.input_tokens_details?.cached_tokens ??
-      0
-  );
-  const outputTokens = Number(
-    usage.completion_tokens ??
-      usage.output_tokens ??
-      usage.outputTokens ??
-      usage.completionTokens ??
-      usage.output ??
-      0
-  );
-  const totalTokens = Number(usage.total_tokens ?? usage.totalTokens ?? inputTokens + outputTokens);
-
-  return {
-    inputTokens: Number.isFinite(inputTokens) ? inputTokens : null,
-    outputTokens: Number.isFinite(outputTokens) ? outputTokens : null,
-    totalTokens: Number.isFinite(totalTokens) ? totalTokens : null
-  };
 }
 
 function getQuickstart(baseUrl: string, apiKey: string) {
@@ -1060,20 +1324,33 @@ async function buildAdminRecentUsage(db: Db) {
         path: item.inboundEndpoint ?? item.upstreamEndpoint ?? "/v1",
         endpoint: item.upstreamEndpoint ?? item.inboundEndpoint ?? null,
         model: item.model,
+        upstreamModel: item.upstreamModel,
         statusCode: item.statusCode,
         createdAt: item.createdAt,
         durationMs: item.durationMs,
+        ttfbMs: item.firstTokenMs,
         inputTokens: item.inputTokens,
         outputTokens: item.outputTokens,
+        cacheReadInputTokens: item.cacheReadTokens,
+        cacheCreationInputTokens: item.cacheCreationTokens,
         totalTokens: item.totalTokens,
-        estimatedCostUsd: item.actualCost ?? item.totalCost,
         costUsd: item.actualCost ?? item.totalCost,
+        estimatedCostUsd: null,
         requestId: item.requestId,
         clientKey: cdk ? maskSecret(cdk.localApiKey) : item.apiKeyName ?? "sub2api",
         sessionId: null,
         retryCount: null,
+        costSource: item.actualCost != null || item.totalCost != null ? "actual" : null,
         providerName: item.accountName ?? "Sub2API",
-        keyName: item.apiKeyName ?? cdk?.sub2apiUsername ?? cdk?.code ?? item.userName ?? item.userEmail ?? null
+        keyName: item.apiKeyName ?? cdk?.sub2apiUsername ?? cdk?.code ?? item.userName ?? item.userEmail ?? null,
+        requestType: item.requestType,
+        specialSettings: [
+          {
+            serviceTier: item.serviceTier,
+            reasoningEffort: item.reasoningEffort,
+            modelMappingChain: item.modelMappingChain
+          }
+        ]
       };
     });
 
@@ -1114,9 +1391,9 @@ async function buildRedeemUsageSummary(db: Db, cdk: Cdk) {
         dailyUsedUsd = sumNullable(snapshot.subscriptions.map((item) => item.dailyUsageUsd)) ?? dailyUsedUsd;
         weeklyUsedUsd = sumNullable(snapshot.subscriptions.map((item) => item.weeklyUsageUsd));
         monthlyUsedUsd = sumNullable(snapshot.subscriptions.map((item) => item.monthlyUsageUsd)) ?? monthlyUsedUsd;
-        limitConcurrentSessions = template.concurrentSessions ?? snapshot.concurrency ?? 1;
+        limitConcurrentSessions = template.concurrentSessions ?? snapshot.concurrency ?? DEFAULT_CONCURRENT_SESSIONS;
       } else {
-        limitConcurrentSessions = template.concurrentSessions ?? 1;
+        limitConcurrentSessions = template.concurrentSessions ?? DEFAULT_CONCURRENT_SESSIONS;
       }
     } catch (error) {
       partialErrors = [
@@ -1125,7 +1402,7 @@ async function buildRedeemUsageSummary(db: Db, cdk: Cdk) {
           message: error instanceof Error ? error.message : "实时套餐信息读取失败"
         }
       ];
-      limitConcurrentSessions = template.concurrentSessions ?? 1;
+      limitConcurrentSessions = template.concurrentSessions ?? DEFAULT_CONCURRENT_SESSIONS;
     }
   }
 
@@ -1218,19 +1495,21 @@ function buildLocalRecentUsageResponse(db: Db, cdk: Cdk, input: {
       model: item.model,
       endpoint: formatUsageEndpoint(item.path),
       statusCode: item.statusCode,
-      costUsd: item.estimatedCostUsd ?? 0,
+      costUsd: item.costUsd,
+      estimatedCostUsd: item.estimatedCostUsd,
       providerName: apiKey?.providerGroup ?? template?.providerGroup ?? "local-relay",
       requestId: item.requestId,
       sessionId: item.sessionId,
       keyName: apiKey?.name ?? "default",
       retryCount: item.retryCount,
       durationMs: item.durationMs,
-      ttfbMs: null,
+      ttfbMs: item.ttfbMs,
       inputTokens: item.inputTokens,
       outputTokens: item.outputTokens,
-      cacheReadInputTokens: null,
-      cacheCreationInputTokens: null,
-      totalTokens: item.totalTokens ?? 0,
+      cacheReadInputTokens: item.cacheReadInputTokens,
+      cacheCreationInputTokens: item.cacheCreationInputTokens,
+      totalTokens: item.totalTokens,
+      costSource: item.costSource,
       context1mApplied: false,
       specialSettings: []
     };
@@ -1310,23 +1589,33 @@ async function buildSub2ApiRecentUsageResponse(
     return {
       createdAt: item.createdAt,
       model: item.model,
+      upstreamModel: item.upstreamModel,
       endpoint: formatUsageEndpoint(item.inboundEndpoint ?? item.upstreamEndpoint ?? "/v1"),
       statusCode: item.statusCode,
-      costUsd: item.actualCost ?? item.totalCost ?? 0,
+      costUsd: item.actualCost ?? item.totalCost ?? null,
+      estimatedCostUsd: null,
       providerName: binding?.groupName ?? template?.providerGroup ?? item.accountName ?? "sub2api",
       requestId: item.requestId,
       sessionId: null,
       keyName: item.apiKeyName ?? "default",
       retryCount: null,
       durationMs: item.durationMs,
-      ttfbMs: null,
+      ttfbMs: item.firstTokenMs,
       inputTokens: item.inputTokens,
       outputTokens: item.outputTokens,
       cacheReadInputTokens: item.cacheReadTokens,
       cacheCreationInputTokens: item.cacheCreationTokens,
-      totalTokens: item.totalTokens ?? 0,
+      totalTokens: item.totalTokens,
+      costSource: item.actualCost != null || item.totalCost != null ? "actual" : null,
       context1mApplied: false,
-      specialSettings: []
+      requestType: item.requestType,
+      specialSettings: [
+        {
+          serviceTier: item.serviceTier,
+          reasoningEffort: item.reasoningEffort,
+          modelMappingChain: item.modelMappingChain
+        }
+      ]
     };
   });
 
@@ -1508,12 +1797,17 @@ function persistProxyUsage(input: {
   model: string | null;
   statusCode: number | null;
   durationMs: number;
+  ttfbMs: number | null;
   inputTokens: number | null;
   outputTokens: number | null;
+  cacheReadInputTokens: number | null;
+  cacheCreationInputTokens: number | null;
   totalTokens: number | null;
+  costUsd: number | null;
   estimatedCostUsd: number | null;
   requestId: string;
   retryCount?: number | null;
+  costSource: "actual" | "estimated" | null;
 }) {
   updateDb((mutableDb) => {
     recordUsage(mutableDb, {
@@ -1523,14 +1817,19 @@ function persistProxyUsage(input: {
       model: input.model,
       statusCode: input.statusCode,
       durationMs: input.durationMs,
+      ttfbMs: input.ttfbMs,
       inputTokens: input.inputTokens,
       outputTokens: input.outputTokens,
+      cacheReadInputTokens: input.cacheReadInputTokens,
+      cacheCreationInputTokens: input.cacheCreationInputTokens,
       totalTokens: input.totalTokens,
+      costUsd: input.costUsd,
       estimatedCostUsd: input.estimatedCostUsd,
       requestId: input.requestId,
       clientKey: maskSecret(input.localApiKey),
       sessionId: null,
-      retryCount: input.retryCount ?? null
+      retryCount: input.retryCount ?? null,
+      costSource: input.costSource
     });
   });
 }
@@ -1596,29 +1895,73 @@ async function relayUpstreamResponse(input: {
   onSuccess?: () => void;
 }) {
   const contentType = input.upstreamResponse.headers.get("content-type") ?? "";
+  const headersTtfbMs = Math.max(Date.now() - input.startedAt, 0);
   applyUpstreamResponseHeaders(input.res, input.upstreamResponse);
 
   if (contentType.includes("text/event-stream") && input.upstreamResponse.body) {
     if (input.upstreamResponse.ok) {
       input.onSuccess?.();
     }
-    persistProxyUsage({
-      cdk: input.cdk,
-      boundApiKey: input.boundApiKey,
-      localApiKey: input.localApiKey,
-      path: input.path,
-      model: input.model,
-      statusCode: input.upstreamResponse.status,
-      durationMs: Date.now() - input.startedAt,
-      inputTokens: null,
-      outputTokens: null,
-      totalTokens: null,
-      estimatedCostUsd: null,
-      requestId: input.requestId,
-      retryCount: input.retryCount ?? null
+    const decoder = new TextDecoder();
+    let textBuffer = "";
+    let streamMetrics = emptyResolvedUsageMetrics(input.model);
+    let firstChunkTtfbMs: number | null = null;
+    const tracker = new Transform({
+      transform(chunk, _encoding, callback) {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        if (firstChunkTtfbMs == null) {
+          firstChunkTtfbMs = Math.max(Date.now() - input.startedAt, 0);
+        }
+        textBuffer = applySseDataLines(
+          textBuffer + decoder.decode(buffer, { stream: true }),
+          (payload) => {
+            streamMetrics = mergeResolvedUsageMetrics(
+              streamMetrics,
+              resolveResponseMetrics(payload, streamMetrics.model ?? input.model)
+            );
+          }
+        );
+        callback(null, buffer);
+      },
+      flush(callback) {
+        textBuffer = applySseDataLines(
+          textBuffer + decoder.decode(),
+          (payload) => {
+            streamMetrics = mergeResolvedUsageMetrics(
+              streamMetrics,
+              resolveResponseMetrics(payload, streamMetrics.model ?? input.model)
+            );
+          },
+          true
+        );
+        callback();
+      }
     });
 
-    Readable.fromWeb(input.upstreamResponse.body as never).pipe(input.res);
+    try {
+      await pipeline(Readable.fromWeb(input.upstreamResponse.body as never), tracker, input.res);
+    } finally {
+      persistProxyUsage({
+        cdk: input.cdk,
+        boundApiKey: input.boundApiKey,
+        localApiKey: input.localApiKey,
+        path: input.path,
+        model: streamMetrics.model ?? input.model,
+        statusCode: input.upstreamResponse.status,
+        durationMs: Date.now() - input.startedAt,
+        ttfbMs: firstChunkTtfbMs ?? headersTtfbMs,
+        inputTokens: streamMetrics.inputTokens,
+        outputTokens: streamMetrics.outputTokens,
+        cacheReadInputTokens: streamMetrics.cacheReadInputTokens,
+        cacheCreationInputTokens: streamMetrics.cacheCreationInputTokens,
+        totalTokens: streamMetrics.totalTokens,
+        costUsd: streamMetrics.costUsd,
+        estimatedCostUsd: streamMetrics.estimatedCostUsd,
+        requestId: input.requestId,
+        retryCount: input.retryCount ?? null,
+        costSource: streamMetrics.costSource
+      });
+    }
     return;
   }
 
@@ -1632,8 +1975,7 @@ async function relayUpstreamResponse(input: {
     }
   }
 
-  const usage = resolveUsageShape(parsedPayload);
-  const estimatedCostUsd = estimateCostUsd(usage.inputTokens, usage.outputTokens);
+  const metrics = resolveResponseMetrics(parsedPayload, input.model);
 
   if (input.upstreamResponse.ok) {
     input.onSuccess?.();
@@ -1643,15 +1985,20 @@ async function relayUpstreamResponse(input: {
     boundApiKey: input.boundApiKey,
     localApiKey: input.localApiKey,
     path: input.path,
-    model: input.model,
+    model: metrics.model,
     statusCode: input.upstreamResponse.status,
     durationMs: Date.now() - input.startedAt,
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    totalTokens: usage.totalTokens,
-    estimatedCostUsd,
+    ttfbMs: headersTtfbMs,
+    inputTokens: metrics.inputTokens,
+    outputTokens: metrics.outputTokens,
+    cacheReadInputTokens: metrics.cacheReadInputTokens,
+    cacheCreationInputTokens: metrics.cacheCreationInputTokens,
+    totalTokens: metrics.totalTokens,
+    costUsd: metrics.costUsd,
+    estimatedCostUsd: metrics.estimatedCostUsd,
     requestId: input.requestId,
-    retryCount: input.retryCount ?? null
+    retryCount: input.retryCount ?? null,
+    costSource: metrics.costSource
   });
 
   input.res.send(responseBuffer);
@@ -1725,6 +2072,7 @@ async function handleProxy(req: Request, res: Response) {
   const normalizedProxyPath = requestPath.startsWith("/v1") ? requestPath.slice(3) : requestPath;
   const upstreamRequestPath = normalizeUpstreamRequestPath(requestPath);
   const { rawBody, jsonBody } = getProxyPayload(req);
+  const forwardRawBody = buildForwardRequestBody(requestPath, req.method, rawBody, jsonBody);
   const model = extractRequestedModel(requestPath, jsonBody);
   let activeCdk = cdk;
   let activeTemplate = template;
@@ -1776,8 +2124,8 @@ async function handleProxy(req: Request, res: Response) {
         headers: buildForwardHeaders(req, account)
       };
 
-      if (!["GET", "HEAD"].includes(req.method.toUpperCase()) && rawBody.length > 0) {
-        init.body = new Uint8Array(rawBody);
+      if (!["GET", "HEAD"].includes(req.method.toUpperCase()) && forwardRawBody.length > 0) {
+        init.body = new Uint8Array(forwardRawBody);
       }
 
       try {
@@ -1974,14 +2322,19 @@ async function handleProxy(req: Request, res: Response) {
         model,
         statusCode: 200,
         durationMs: Date.now() - startedAt,
+        ttfbMs: Date.now() - startedAt,
         inputTokens,
         outputTokens,
+        cacheReadInputTokens: null,
+        cacheCreationInputTokens: null,
         totalTokens,
+        costUsd: null,
         estimatedCostUsd,
         requestId,
         clientKey: maskSecret(localApiKey),
         sessionId: null,
-        retryCount: null
+        retryCount: null,
+        costSource: estimatedCostUsd != null ? "estimated" : null
       });
     });
 
@@ -2020,8 +2373,8 @@ async function handleProxy(req: Request, res: Response) {
     headers
   };
 
-  if (!["GET", "HEAD"].includes(req.method.toUpperCase()) && rawBody.length > 0) {
-    init.body = new Uint8Array(rawBody);
+  if (!["GET", "HEAD"].includes(req.method.toUpperCase()) && forwardRawBody.length > 0) {
+    init.body = new Uint8Array(forwardRawBody);
   }
 
   const upstreamResponse = await fetch(upstreamUrl, init);

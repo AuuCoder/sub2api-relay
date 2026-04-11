@@ -6,6 +6,8 @@ export type RechargeMode = "extend_duration" | "boost_quota" | "overwrite";
 export type DailyResetMode = "fixed" | "rolling";
 export type UpstreamPlatform = "anthropic" | "openai" | "gemini" | "antigravity";
 
+export const DEFAULT_CONCURRENT_SESSIONS = 5;
+
 export type Sub2ApiBinding = {
   platform: UpstreamPlatform;
   groupId: number;
@@ -192,14 +194,19 @@ export type UsageRecord = {
   statusCode: number | null;
   createdAt: string;
   durationMs: number;
+  ttfbMs: number | null;
   inputTokens: number | null;
   outputTokens: number | null;
+  cacheReadInputTokens: number | null;
+  cacheCreationInputTokens: number | null;
   totalTokens: number | null;
+  costUsd: number | null;
   estimatedCostUsd: number | null;
   requestId: string;
   clientKey: string;
   sessionId: string | null;
   retryCount: number | null;
+  costSource: "actual" | "estimated" | null;
 };
 
 export type AdminUser = {

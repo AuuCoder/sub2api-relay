@@ -47,6 +47,13 @@ export function formatCost(value: number | null | undefined) {
   return `$${value.toFixed(value >= 1 ? 2 : 6).replace(/0+$/, "").replace(/\.$/, "")}`;
 }
 
+export function formatUsageCost(actual: number | null | undefined, estimated?: number | null) {
+  const value = actual ?? estimated;
+  if (value == null || !Number.isFinite(value)) return "-";
+  const formatted = formatCost(value);
+  return actual == null && estimated != null ? `~${formatted}` : formatted;
+}
+
 export function formatCny(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return "-";
   return `¥${value.toFixed(2)}`;

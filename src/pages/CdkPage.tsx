@@ -9,11 +9,11 @@ import {
   ensureV1Url,
   extractCdkCode,
   formatCompact,
-  formatCost,
   formatDate,
   formatDurationMs,
   formatInteger,
   formatMoney,
+  formatUsageCost,
   formatUsageUsd,
   isExpiredAt,
   maskSecret,
@@ -822,7 +822,7 @@ function UsageRow({ item }: { item: UsageRecord }) {
         <p className="usage-primary">{item.model ?? "未返回模型"}</p>
         <div className="usage-substack">
           <p>{item.providerName ?? "-"}</p>
-          <p>{item.keyName ? `Key ${item.keyName}` : "Key -"}</p>
+          <p>{getUsageModelDetail(item)}</p>
         </div>
       </div>
 
@@ -858,7 +858,7 @@ function UsageRow({ item }: { item: UsageRecord }) {
 
       <div className="usage-cell is-right">
         <span className="usage-mobile-label">成本</span>
-        <p className="usage-primary">{formatCost(item.costUsd ?? item.estimatedCostUsd)}</p>
+        <p className="usage-primary">{formatUsageCost(item.costUsd, item.estimatedCostUsd)}</p>
         {flags.length ? (
           <div className="usage-flags">
             {flags.map((flag) => (
@@ -1027,6 +1027,22 @@ function getStatusClass(statusCode: number | null | undefined) {
 function truncateRequestId(value: string | null | undefined) {
   if (!value) return "-";
   return value.length <= 24 ? value : `${value.slice(0, 24)}...`;
+}
+
+function getUsageModelDetail(item: UsageRecord) {
+  const details: string[] = [];
+
+  if (item.keyName) {
+    details.push(`Key ${item.keyName}`);
+  } else {
+    details.push("Key -");
+  }
+
+  if (item.upstreamModel && item.upstreamModel !== item.model) {
+    details.push(`上游 ${item.upstreamModel}`);
+  }
+
+  return details.join(" · ");
 }
 
 function getUsageFlags(item: UsageRecord) {

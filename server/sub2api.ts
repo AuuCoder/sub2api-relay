@@ -1,7 +1,7 @@
 import "./env";
 import crypto from "node:crypto";
 import { parseProviderGroups, type GatewayPlatform } from "./gateway";
-import type { Cdk, Sub2ApiBinding, Template } from "./types";
+import { DEFAULT_CONCURRENT_SESSIONS, type Cdk, type Sub2ApiBinding, type Template } from "./types";
 
 type Sub2ApiConfig = {
   baseUrl: string;
@@ -135,6 +135,9 @@ type Sub2ApiAdminUsageLog = {
   status?: number | string | null;
   request_id?: string;
   model?: string;
+  upstream_model?: string | null;
+  service_tier?: string | null;
+  reasoning_effort?: string | null;
   inbound_endpoint?: string | null;
   upstream_endpoint?: string | null;
   input_tokens?: number;
@@ -144,8 +147,10 @@ type Sub2ApiAdminUsageLog = {
   total_cost?: number;
   actual_cost?: number;
   duration_ms?: number | null;
+  first_token_ms?: number | null;
   created_at?: string;
   request_type?: string;
+  model_mapping_chain?: string | null;
   user?: Sub2ApiUsageUser | null;
   api_key?: Sub2ApiUsageApiKeyRef | null;
   account?: Sub2ApiUsageAccountRef | null;
@@ -159,6 +164,9 @@ export type Sub2ApiRecentUsageItem = {
   statusCode: number | null;
   requestId: string | null;
   model: string | null;
+  upstreamModel: string | null;
+  serviceTier: string | null;
+  reasoningEffort: string | null;
   inboundEndpoint: string | null;
   upstreamEndpoint: string | null;
   inputTokens: number | null;
@@ -169,8 +177,10 @@ export type Sub2ApiRecentUsageItem = {
   totalCost: number | null;
   actualCost: number | null;
   durationMs: number | null;
+  firstTokenMs: number | null;
   createdAt: string;
   requestType: string | null;
+  modelMappingChain: string | null;
   userEmail: string | null;
   userName: string | null;
   apiKeyName: string | null;
@@ -466,7 +476,7 @@ async function ensureUser(
   groups: Sub2ApiGroup[]
 ) {
   const identity = buildIdentity(cdk);
-  const desiredConcurrency = Math.max(template.concurrentSessions ?? 1, 1);
+  const desiredConcurrency = Math.max(template.concurrentSessions ?? DEFAULT_CONCURRENT_SESSIONS, 1);
   const desiredAllowedGroups = sortNumeric(groups.map((item) => item.id));
   let user = cdk.sub2apiUserId ? await getUserById(config, adminAuth, cdk.sub2apiUserId) : null;
 
@@ -1074,6 +1084,14 @@ export async function fetchSub2ApiAdminRecentUsagePage(input?: {
         statusCode: extractUsageStatusCode(item),
         requestId: typeof item.request_id === "string" && item.request_id.trim() ? item.request_id.trim() : null,
         model: typeof item.model === "string" && item.model.trim() ? item.model.trim() : null,
+        upstreamModel:
+          typeof item.upstream_model === "string" && item.upstream_model.trim() ? item.upstream_model.trim() : null,
+        serviceTier:
+          typeof item.service_tier === "string" && item.service_tier.trim() ? item.service_tier.trim() : null,
+        reasoningEffort:
+          typeof item.reasoning_effort === "string" && item.reasoning_effort.trim()
+            ? item.reasoning_effort.trim()
+            : null,
         inboundEndpoint:
           typeof item.inbound_endpoint === "string" && item.inbound_endpoint.trim()
             ? item.inbound_endpoint.trim()
@@ -1090,8 +1108,13 @@ export async function fetchSub2ApiAdminRecentUsagePage(input?: {
         totalCost: Number.isFinite(item.total_cost) ? Number(item.total_cost) : null,
         actualCost: Number.isFinite(item.actual_cost) ? Number(item.actual_cost) : null,
         durationMs: Number.isFinite(item.duration_ms) ? Number(item.duration_ms) : null,
+        firstTokenMs: Number.isFinite(item.first_token_ms) ? Number(item.first_token_ms) : null,
         createdAt: typeof item.created_at === "string" ? item.created_at : new Date().toISOString(),
         requestType: typeof item.request_type === "string" && item.request_type.trim() ? item.request_type.trim() : null,
+        modelMappingChain:
+          typeof item.model_mapping_chain === "string" && item.model_mapping_chain.trim()
+            ? item.model_mapping_chain.trim()
+            : null,
         userEmail: typeof item.user?.email === "string" && item.user.email.trim() ? item.user.email.trim() : null,
         userName:
           typeof item.user?.username === "string" && item.user.username.trim() ? item.user.username.trim() : null,

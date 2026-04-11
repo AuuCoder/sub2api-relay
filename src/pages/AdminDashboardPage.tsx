@@ -8,6 +8,7 @@ import {
   formatDate,
   formatDurationMs,
   formatMoney,
+  formatUsageCost,
   formatUsageUsd,
   isExpiredAt,
   truncateMiddle
@@ -419,7 +420,7 @@ export function AdminDashboardPage() {
                         <span className="soft-tag">{item.providerName ?? "本地网关"}</span>
                         <span className="soft-tag">{item.keyName ?? item.clientKey ?? "-"}</span>
                         <span className="soft-tag">{formatDurationMs(item.durationMs)}</span>
-                        <span className="soft-tag">{formatUsageUsd(item.estimatedCostUsd ?? item.costUsd)}</span>
+                        <span className="soft-tag">{formatUsageCost(item.costUsd, item.estimatedCostUsd)}</span>
                         <span className="soft-tag">{truncateMiddle(item.requestId, 10, 6)}</span>
                       </div>
                     </article>

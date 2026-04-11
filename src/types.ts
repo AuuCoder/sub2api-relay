@@ -173,6 +173,7 @@ export type UsageRecord = {
   apiKeyId?: string | null;
   path?: string;
   model: string | null;
+  upstreamModel?: string | null;
   endpoint?: string;
   statusCode: number | null;
   createdAt: string;
@@ -188,9 +189,11 @@ export type UsageRecord = {
   retryCount: number | null;
   providerName?: string | null;
   keyName?: string | null;
+  requestType?: string | null;
   ttfbMs?: number | null;
   cacheReadInputTokens?: number | null;
   cacheCreationInputTokens?: number | null;
+  costSource?: "actual" | "estimated" | null;
   context1mApplied?: boolean;
   specialSettings?: Array<Record<string, unknown>>;
 };
