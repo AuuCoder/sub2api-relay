@@ -2129,6 +2129,7 @@ async function handleProxy(req: Request, res: Response) {
   }
 
   if (boundApiKey) {
+    const isPrimaryKey = boundApiKey.key === cdk.localApiKey;
     if (!boundApiKey.isEnabled) {
       res.status(403).json({ message: "子 Key 已禁用" });
       return;
@@ -2137,7 +2138,7 @@ async function handleProxy(req: Request, res: Response) {
       res.status(403).json({ message: "子 Key 已过期" });
       return;
     }
-    if (!hasApiKeyQuotaAvailable(db, boundApiKey)) {
+    if (!isPrimaryKey && !hasApiKeyQuotaAvailable(db, boundApiKey)) {
       res.status(429).json({ message: "子 Key 额度已用尽" });
       return;
     }
