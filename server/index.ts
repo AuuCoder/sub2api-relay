@@ -25,7 +25,8 @@ import {
   fetchSub2ApiModelCatalog,
   fetchSub2ApiUserSnapshot,
   getSub2ApiConfig,
-  hasSub2ApiMode
+  hasSub2ApiMode,
+  type Sub2ApiUserSnapshot
 } from "./sub2api";
 import {
   applyInviteReward,
@@ -50,7 +51,6 @@ import {
   getCdkUsage,
   getQuotaSnapshot,
   hasApiKeyQuotaAvailable,
-  hasQuotaAvailable,
   hashValue,
   isExpired,
   makeId,
@@ -96,6 +96,15 @@ type AdminLoginAttempt = {
 
 const adminSessions = new Map<string, AdminSession>();
 const adminLoginAttempts = new Map<string, AdminLoginAttempt>();
+const sub2ApiUserSnapshotCache = new Map<
+  number,
+  {
+    value: Sub2ApiUserSnapshot | null;
+    fetchedAt: number;
+    promise: Promise<Sub2ApiUserSnapshot | null> | null;
+  }
+>();
+const sub2ApiUserSnapshotTtlMs = 5_000;
 
 function hasNewApiMode() {
   return Boolean(process.env.NEWAPI_BASE_URL?.trim());
@@ -1372,9 +1381,53 @@ function sumNullable(values: Array<number | null | undefined>) {
   return Number(numeric.reduce((sum, value) => sum + value, 0).toFixed(6));
 }
 
-async function buildRedeemUsageSummary(db: Db, cdk: Cdk) {
+async function getCachedSub2ApiUserSnapshot(userId: number) {
+  const current = sub2ApiUserSnapshotCache.get(userId);
+  const now = Date.now();
+  if (current && now - current.fetchedAt < sub2ApiUserSnapshotTtlMs) {
+    return current.value;
+  }
+  if (current?.promise) {
+    return current.promise;
+  }
+
+  const promise = fetchSub2ApiUserSnapshot(userId)
+    .then((value) => {
+      sub2ApiUserSnapshotCache.set(userId, {
+        value,
+        fetchedAt: Date.now(),
+        promise: null
+      });
+      return value;
+    })
+    .catch((error) => {
+      sub2ApiUserSnapshotCache.delete(userId);
+      throw error;
+    });
+
+  sub2ApiUserSnapshotCache.set(userId, {
+    value: current?.value ?? null,
+    fetchedAt: current?.fetchedAt ?? 0,
+    promise
+  });
+
+  return promise;
+}
+
+type ResolvedCdkQuotaState = {
+  quotas: ReturnType<typeof getQuotaSnapshot>;
+  dailyUsedUsd: number | null;
+  weeklyUsedUsd: number | null;
+  monthlyUsedUsd: number | null;
+  totalUsedUsd: number | null;
+  limitConcurrentSessions: number | null;
+  partialErrors: Array<{ scope: string; message: string }>;
+};
+
+async function resolveCdkQuotaState(db: Db, cdk: Cdk): Promise<ResolvedCdkQuotaState | null> {
   const template = findTemplate(db, cdk.templateId);
   if (!template) return null;
+
   const quotas = getQuotaSnapshot(db, cdk);
   let dailyUsedUsd = quotas.daily.usedUsd;
   let weeklyUsedUsd: number | null = null;
@@ -1382,11 +1435,10 @@ async function buildRedeemUsageSummary(db: Db, cdk: Cdk) {
   let totalUsedUsd = quotas.total.usedUsd;
   let limitConcurrentSessions = template.concurrentSessions;
   let partialErrors: Array<{ scope: string; message: string }> = [];
-  const resetAt = template.dailyResetMode === "fixed" ? computeNextFixedResetAt(template.dailyResetTime) : null;
 
   if (getUpstreamMode() === "sub2api" && cdk.sub2apiUserId != null) {
     try {
-      const snapshot = await fetchSub2ApiUserSnapshot(cdk.sub2apiUserId);
+      const snapshot = await getCachedSub2ApiUserSnapshot(cdk.sub2apiUserId);
       if (snapshot) {
         dailyUsedUsd = sumNullable(snapshot.subscriptions.map((item) => item.dailyUsageUsd)) ?? dailyUsedUsd;
         weeklyUsedUsd = sumNullable(snapshot.subscriptions.map((item) => item.weeklyUsageUsd));
@@ -1405,6 +1457,35 @@ async function buildRedeemUsageSummary(db: Db, cdk: Cdk) {
       limitConcurrentSessions = template.concurrentSessions ?? DEFAULT_CONCURRENT_SESSIONS;
     }
   }
+
+  return {
+    quotas,
+    dailyUsedUsd,
+    weeklyUsedUsd,
+    monthlyUsedUsd,
+    totalUsedUsd,
+    limitConcurrentSessions,
+    partialErrors
+  };
+}
+
+function hasResolvedQuotaAvailable(state: ResolvedCdkQuotaState) {
+  return [
+    [state.dailyUsedUsd, state.quotas.daily.limitUsd],
+    [state.monthlyUsedUsd, state.quotas.monthly.limitUsd],
+    [state.totalUsedUsd, state.quotas.total.limitUsd]
+  ].every(([usedUsd, limitUsd]) => limitUsd == null || usedUsd == null || usedUsd < limitUsd);
+}
+
+async function buildRedeemUsageSummary(db: Db, cdk: Cdk) {
+  const template = findTemplate(db, cdk.templateId);
+  if (!template) return null;
+  const quotaState = await resolveCdkQuotaState(db, cdk);
+  if (!quotaState) return null;
+
+  const { quotas, dailyUsedUsd, weeklyUsedUsd, monthlyUsedUsd, totalUsedUsd, limitConcurrentSessions, partialErrors } =
+    quotaState;
+  const resetAt = template.dailyResetMode === "fixed" ? computeNextFixedResetAt(template.dailyResetTime) : null;
 
   return {
     ok: true,
@@ -2036,7 +2117,13 @@ async function handleProxy(req: Request, res: Response) {
     return;
   }
 
-  if (!hasQuotaAvailable(db, cdk)) {
+  const quotaState = await resolveCdkQuotaState(db, cdk);
+  if (!quotaState) {
+    res.status(503).json({ message: "CDK 关联的套餐不存在" });
+    return;
+  }
+
+  if (!hasResolvedQuotaAvailable(quotaState)) {
     res.status(429).json({ message: "额度已用尽，请充值或更换套餐" });
     return;
   }
