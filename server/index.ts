@@ -26,6 +26,7 @@ import {
   fetchSub2ApiUserSnapshot,
   getSub2ApiConfig,
   hasSub2ApiMode,
+  type Sub2ApiRecentUsageItem,
   type Sub2ApiUserSnapshot
 } from "./sub2api";
 import {
@@ -105,6 +106,22 @@ const sub2ApiUserSnapshotCache = new Map<
   }
 >();
 const sub2ApiUserSnapshotTtlMs = 5_000;
+type Sub2ApiActualQuotaUsage = {
+  dailyUsedUsd: number;
+  weeklyUsedUsd: number;
+  monthlyUsedUsd: number;
+};
+const sub2ApiActualQuotaUsageCache = new Map<
+  string,
+  {
+    value: Sub2ApiActualQuotaUsage | null;
+    fetchedAt: number;
+    promise: Promise<Sub2ApiActualQuotaUsage> | null;
+  }
+>();
+const sub2ApiActualQuotaUsageTtlMs = 5_000;
+const sub2ApiUsageQueryTimezone = "Asia/Shanghai";
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function hasNewApiMode() {
   return Boolean(process.env.NEWAPI_BASE_URL?.trim());
@@ -1381,6 +1398,152 @@ function sumNullable(values: Array<number | null | undefined>) {
   return Number(numeric.reduce((sum, value) => sum + value, 0).toFixed(6));
 }
 
+function formatDateForTimeZone(value: Date | number, timeZone: string) {
+  const date = typeof value === "number" ? new Date(value) : value;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value ?? "1970";
+  const month = parts.find((part) => part.type === "month")?.value ?? "01";
+  const day = parts.find((part) => part.type === "day")?.value ?? "01";
+  return `${year}-${month}-${day}`;
+}
+
+function getCurrentDailyWindowStartMs(mode: Template["dailyResetMode"], dailyResetTime: string) {
+  if (mode === "rolling") {
+    return Date.now() - DAY_MS;
+  }
+
+  const [rawHour = "0", rawMinute = "0"] = dailyResetTime.split(":");
+  const hour = Number(rawHour);
+  const minute = Number(rawMinute);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) {
+    return Date.now() - DAY_MS;
+  }
+
+  const now = new Date();
+  const start = new Date(now);
+  start.setSeconds(0, 0);
+  start.setHours(hour, minute, 0, 0);
+  if (start.getTime() > now.getTime()) {
+    start.setDate(start.getDate() - 1);
+  }
+  return start.getTime();
+}
+
+function resolveSub2ApiUsageCost(item: Pick<Sub2ApiRecentUsageItem, "actualCost" | "totalCost">) {
+  const value = item.actualCost ?? item.totalCost ?? 0;
+  return Number.isFinite(value) ? Number(value) : 0;
+}
+
+function sumSub2ApiUsageCost(items: Sub2ApiRecentUsageItem[], startMs: number, endMs: number) {
+  return Number(
+    items
+      .reduce((sum, item) => {
+        const createdAtMs = Date.parse(item.createdAt);
+        if (!Number.isFinite(createdAtMs) || createdAtMs < startMs || createdAtMs > endMs) {
+          return sum;
+        }
+        return sum + resolveSub2ApiUsageCost(item);
+      }, 0)
+      .toFixed(6)
+  );
+}
+
+async function fetchSub2ApiActualQuotaUsage(userId: number, template: Pick<Template, "dailyResetMode" | "dailyResetTime">) {
+  const now = Date.now();
+  const dailyStartMs = getCurrentDailyWindowStartMs(template.dailyResetMode, template.dailyResetTime);
+  const weeklyStartMs = now - 7 * DAY_MS;
+  const monthlyStartMs = now - 30 * DAY_MS;
+
+  // Sub2API only filters by date, so fetch one extra day on both sides and trim precisely in-memory.
+  const startDate = formatDateForTimeZone(monthlyStartMs - DAY_MS, sub2ApiUsageQueryTimezone);
+  const endDate = formatDateForTimeZone(now + DAY_MS, sub2ApiUsageQueryTimezone);
+  const items: Sub2ApiRecentUsageItem[] = [];
+  const pageSize = 200;
+  const maxPages = 100;
+  let page = 1;
+
+  while (page <= maxPages) {
+    const current = await fetchSub2ApiAdminRecentUsagePage({
+      page,
+      pageSize,
+      timezone: sub2ApiUsageQueryTimezone,
+      startDate,
+      endDate,
+      userId
+    });
+
+    items.push(...current.items);
+
+    if (!current.items.length || page >= current.totalPages) {
+      break;
+    }
+
+    const lastItem = current.items[current.items.length - 1];
+    const lastCreatedAtMs = lastItem ? Date.parse(lastItem.createdAt) : Number.NaN;
+    if (Number.isFinite(lastCreatedAtMs) && lastCreatedAtMs < monthlyStartMs) {
+      break;
+    }
+
+    page += 1;
+  }
+
+  if (page > maxPages) {
+    throw new Error("实际用量明细超过可扫描页数上限，暂时无法精确计算");
+  }
+
+  return {
+    dailyUsedUsd: sumSub2ApiUsageCost(items, dailyStartMs, now),
+    weeklyUsedUsd: sumSub2ApiUsageCost(items, weeklyStartMs, now),
+    monthlyUsedUsd: sumSub2ApiUsageCost(items, monthlyStartMs, now)
+  } satisfies Sub2ApiActualQuotaUsage;
+}
+
+function getSub2ApiActualQuotaUsageCacheKey(userId: number, template: Pick<Template, "dailyResetMode" | "dailyResetTime">) {
+  return `${userId}:${template.dailyResetMode}:${template.dailyResetTime}`;
+}
+
+async function getCachedSub2ApiActualQuotaUsage(
+  userId: number,
+  template: Pick<Template, "dailyResetMode" | "dailyResetTime">
+) {
+  const key = getSub2ApiActualQuotaUsageCacheKey(userId, template);
+  const current = sub2ApiActualQuotaUsageCache.get(key);
+  const now = Date.now();
+  if (current?.value && now - current.fetchedAt < sub2ApiActualQuotaUsageTtlMs) {
+    return current.value;
+  }
+  if (current?.promise) {
+    return current.promise;
+  }
+
+  const promise = fetchSub2ApiActualQuotaUsage(userId, template)
+    .then((value) => {
+      sub2ApiActualQuotaUsageCache.set(key, {
+        value,
+        fetchedAt: Date.now(),
+        promise: null
+      });
+      return value;
+    })
+    .catch((error) => {
+      sub2ApiActualQuotaUsageCache.delete(key);
+      throw error;
+    });
+
+  sub2ApiActualQuotaUsageCache.set(key, {
+    value: current?.value ?? null,
+    fetchedAt: current?.fetchedAt ?? 0,
+    promise
+  });
+
+  return promise;
+}
+
 async function getCachedSub2ApiUserSnapshot(userId: number) {
   const current = sub2ApiUserSnapshotCache.get(userId);
   const now = Date.now();
@@ -1485,6 +1648,34 @@ async function buildRedeemUsageSummary(db: Db, cdk: Cdk) {
 
   const { quotas, dailyUsedUsd, weeklyUsedUsd, monthlyUsedUsd, totalUsedUsd, limitConcurrentSessions, partialErrors } =
     quotaState;
+  let displayDailyUsedUsd = dailyUsedUsd;
+  let displayWeeklyUsedUsd = weeklyUsedUsd;
+  let displayMonthlyUsedUsd = monthlyUsedUsd;
+  let displayPartialErrors = partialErrors;
+  let dailyUsageSource = getUpstreamMode() === "sub2api" ? "sub2api.daily" : "local.daily";
+  let weeklyUsageSource = getUpstreamMode() === "sub2api" ? "sub2api.weekly" : "local.weekly";
+  let monthlyUsageSource = getUpstreamMode() === "sub2api" ? "sub2api.monthly" : "local.monthly";
+
+  if (getUpstreamMode() === "sub2api" && cdk.sub2apiUserId != null) {
+    try {
+      const actualUsage = await getCachedSub2ApiActualQuotaUsage(cdk.sub2apiUserId, template);
+      displayDailyUsedUsd = actualUsage.dailyUsedUsd;
+      displayWeeklyUsedUsd = actualUsage.weeklyUsedUsd;
+      displayMonthlyUsedUsd = actualUsage.monthlyUsedUsd;
+      dailyUsageSource = "sub2api.admin_usage.actual";
+      weeklyUsageSource = "sub2api.admin_usage.actual";
+      monthlyUsageSource = "sub2api.admin_usage.actual";
+    } catch (error) {
+      displayPartialErrors = [
+        ...partialErrors,
+        {
+          scope: "sub2api.admin_usage",
+          message: error instanceof Error ? error.message : "实际用量读取失败"
+        }
+      ];
+    }
+  }
+
   const resetAt = template.dailyResetMode === "fixed" ? computeNextFixedResetAt(template.dailyResetTime) : null;
 
   return {
@@ -1502,26 +1693,26 @@ async function buildRedeemUsageSummary(db: Db, cdk: Cdk) {
         daily: {
           label: "套餐日额度",
           limitUsd: quotas.daily.limitUsd,
-          usedUsd: dailyUsedUsd,
-          remainingUsd: computeQuotaRemaining(quotas.daily.limitUsd, dailyUsedUsd),
+          usedUsd: displayDailyUsedUsd,
+          remainingUsd: computeQuotaRemaining(quotas.daily.limitUsd, displayDailyUsedUsd),
           resetAt,
-          usageSource: getUpstreamMode() === "sub2api" ? "sub2api.daily" : "local.daily"
+          usageSource: dailyUsageSource
         },
         weekly: {
           label: "套餐周额度",
           limitUsd: template.weeklyQuotaUsd,
-          usedUsd: weeklyUsedUsd,
-          remainingUsd: computeQuotaRemaining(template.weeklyQuotaUsd, weeklyUsedUsd),
+          usedUsd: displayWeeklyUsedUsd,
+          remainingUsd: computeQuotaRemaining(template.weeklyQuotaUsd, displayWeeklyUsedUsd),
           resetAt: null,
-          usageSource: getUpstreamMode() === "sub2api" ? "sub2api.weekly" : "local.weekly"
+          usageSource: weeklyUsageSource
         },
         monthly: {
           label: "套餐月额度",
           limitUsd: quotas.monthly.limitUsd,
-          usedUsd: monthlyUsedUsd,
-          remainingUsd: computeQuotaRemaining(quotas.monthly.limitUsd, monthlyUsedUsd),
+          usedUsd: displayMonthlyUsedUsd,
+          remainingUsd: computeQuotaRemaining(quotas.monthly.limitUsd, displayMonthlyUsedUsd),
           resetAt: null,
-          usageSource: getUpstreamMode() === "sub2api" ? "sub2api.monthly" : "local.monthly"
+          usageSource: monthlyUsageSource
         },
         total: {
           label: "套餐总额度",
@@ -1533,7 +1724,7 @@ async function buildRedeemUsageSummary(db: Db, cdk: Cdk) {
         }
       },
       recentUsage: [],
-      partialErrors,
+      partialErrors: displayPartialErrors,
       fetchedAt: new Date().toISOString(),
       snapshot: {
         lastSyncedAt: new Date().toISOString(),
