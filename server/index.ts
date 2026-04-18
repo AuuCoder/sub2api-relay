@@ -1640,6 +1640,35 @@ function hasResolvedQuotaAvailable(state: ResolvedCdkQuotaState) {
   ].every(([usedUsd, limitUsd]) => limitUsd == null || usedUsd == null || usedUsd < limitUsd);
 }
 
+async function hasEffectiveQuotaAvailable(
+  cdk: Cdk,
+  template: Pick<Template, "dailyResetMode" | "dailyResetTime">,
+  state: ResolvedCdkQuotaState
+) {
+  if (
+    getUpstreamMode() !== "sub2api" ||
+    cdk.sub2apiUserId == null ||
+    (state.quotas.daily.limitUsd == null && state.quotas.monthly.limitUsd == null)
+  ) {
+    return hasResolvedQuotaAvailable(state);
+  }
+
+  try {
+    const actualUsage = await getCachedSub2ApiActualQuotaUsage(cdk.sub2apiUserId, template);
+    return [
+      [actualUsage.dailyUsedUsd, state.quotas.daily.limitUsd],
+      [actualUsage.monthlyUsedUsd, state.quotas.monthly.limitUsd],
+      [state.totalUsedUsd, state.quotas.total.limitUsd]
+    ].every(([usedUsd, limitUsd]) => limitUsd == null || usedUsd == null || usedUsd < limitUsd);
+  } catch (error) {
+    console.warn(
+      "[sub2api] actual quota enforcement fallback:",
+      error instanceof Error ? error.message : error
+    );
+    return hasResolvedQuotaAvailable(state);
+  }
+}
+
 async function buildRedeemUsageSummary(db: Db, cdk: Cdk) {
   const template = findTemplate(db, cdk.templateId);
   if (!template) return null;
@@ -2308,13 +2337,19 @@ async function handleProxy(req: Request, res: Response) {
     return;
   }
 
+  const template = findTemplate(db, cdk.templateId);
+  if (!template) {
+    res.status(503).json({ message: "CDK 关联的套餐不存在" });
+    return;
+  }
+
   const quotaState = await resolveCdkQuotaState(db, cdk);
   if (!quotaState) {
     res.status(503).json({ message: "CDK 关联的套餐不存在" });
     return;
   }
 
-  if (!hasResolvedQuotaAvailable(quotaState)) {
+  if (!(await hasEffectiveQuotaAvailable(cdk, template, quotaState))) {
     res.status(429).json({ message: "额度已用尽，请充值或更换套餐" });
     return;
   }
@@ -2333,12 +2368,6 @@ async function handleProxy(req: Request, res: Response) {
       res.status(429).json({ message: "子 Key 额度已用尽" });
       return;
     }
-  }
-
-  const template = findTemplate(db, cdk.templateId);
-  if (!template) {
-    res.status(503).json({ message: "CDK 关联的套餐不存在" });
-    return;
   }
 
   const upstreamMode = getUpstreamMode();
