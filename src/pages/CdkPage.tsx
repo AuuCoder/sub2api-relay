@@ -928,17 +928,74 @@ function getTemplateChips(template?: RedeemDetail["template"]) {
 
 function buildPackageUsageSummary(detail: RedeemDetail | null, summary: UsageSummaryResponse["data"] | null) {
   if (!detail?.template || !summary) return [];
+  const hasRecharge = hasRechargeContext(detail, summary);
+  const baseQuotaLabel = getTemplateQuotaLabel(detail.template);
+  const effectiveQuotaLabel = getPackageQuotaLabel(detail.template, detail.cdk);
+  const latestRechargeLabel = getLatestRechargeLabel(detail, summary);
 
-  return [
-    { label: "当前套餐", value: detail.template.name },
-    { label: "套餐额度", value: getPackageQuotaLabel(detail.template, detail.cdk) },
-    {
-      label:
-        summary.expiresAt && summary.finalExpiresAt && summary.expiresAt !== summary.finalExpiresAt ? "最终到期" : "到期",
-      value: formatDate(summary.finalExpiresAt)
-    },
-    { label: "今日已用", value: formatUsageUsd(summary.quotas.daily.usedUsd) }
-  ];
+  const items = [{ label: hasRecharge ? "基础套餐" : "当前套餐", value: detail.template.name }];
+
+  if (hasRecharge && baseQuotaLabel !== effectiveQuotaLabel) {
+    items.push({ label: "基础额度", value: baseQuotaLabel });
+    items.push({ label: "当前生效", value: effectiveQuotaLabel });
+  } else {
+    items.push({ label: "套餐额度", value: effectiveQuotaLabel });
+  }
+
+  if (latestRechargeLabel) {
+    items.push({ label: "最近充值", value: latestRechargeLabel });
+  }
+
+  items.push({
+    label: hasRecharge ? "最终到期" : "到期",
+    value: formatDate(summary.finalExpiresAt)
+  });
+  items.push({ label: "今日已用", value: formatUsageUsd(summary.quotas.daily.usedUsd) });
+
+  return items;
+}
+
+function hasRechargeContext(detail: RedeemDetail, summary: UsageSummaryResponse["data"]) {
+  return Boolean(
+    detail.cdk.lastRechargeAt ??
+      detail.cdk.last_recharge_at ??
+      detail.cdk.sourceCdkCode ??
+      detail.cdk.source_cdk_code ??
+      getLatestRechargeRow(summary)
+  );
+}
+
+function getLatestRechargeRow(summary: UsageSummaryResponse["data"]) {
+  return [...summary.quotaChangeTimeline]
+    .filter((row) => row.kind === "recharge")
+    .sort((left, right) => (right.confirmedAt ?? "").localeCompare(left.confirmedAt ?? ""))[0];
+}
+
+function getLatestRechargeLabel(detail: RedeemDetail, summary: UsageSummaryResponse["data"]) {
+  const latestRecharge = getLatestRechargeRow(summary);
+  const sourceCode = detail.cdk.sourceCdkCode ?? detail.cdk.source_cdk_code ?? latestRecharge?.cdk ?? null;
+  if (!sourceCode && !latestRecharge) return null;
+
+  const parts = [sourceCode, latestRecharge?.templateName, latestRecharge?.mode ? getRechargeModeLabel(latestRecharge.mode) : null];
+  return parts.filter(Boolean).join(" / ");
+}
+
+function getTemplateQuotaLabel(template: RedeemDetail["template"]) {
+  const duration = template.duration_days ?? template.durationDays;
+  const daily = template.daily_quota_usd ?? template.dailyQuotaUsd;
+  const monthly = template.monthly_quota_usd ?? template.monthlyQuotaUsd;
+  const total = template.total_quota_usd ?? template.totalQuotaUsd;
+
+  if (total != null) {
+    return duration != null ? `${duration} 天 / 总额度 ${formatMoney(total)}` : `总额度 ${formatMoney(total)}`;
+  }
+  if (monthly != null) {
+    return `月额度 ${formatMoney(monthly)}`;
+  }
+  if (daily != null) {
+    return duration != null ? `${duration} 天 / 日额度 ${formatMoney(daily)}` : `日额度 ${formatMoney(daily)}`;
+  }
+  return "按套餐配置";
 }
 
 function getPackageQuotaLabel(template: RedeemDetail["template"], cdk: RedeemDetail["cdk"]) {
