@@ -1064,8 +1064,17 @@ function serializeTemplate(template: Template) {
   };
 }
 
-function serializeApiKey(db: Db, cdk: Cdk, item: ReturnType<typeof getApiKeysForCdk>[number]) {
+function serializeApiKey(
+  db: Db,
+  cdk: Cdk,
+  item: ReturnType<typeof getApiKeysForCdk>[number],
+  options?: { effectiveConcurrentSessions?: number | null }
+) {
   const usage = getApiKeyUsageSnapshot(db, item);
+  const isPrimary = item.key === cdk.localApiKey;
+  const effectiveConcurrentSessions = isPrimary
+    ? options?.effectiveConcurrentSessions ?? item.limitConcurrentSessions
+    : item.limitConcurrentSessions;
   return {
     id: item.id,
     userId: cdk.id,
@@ -1080,15 +1089,23 @@ function serializeApiKey(db: Db, cdk: Cdk, item: ReturnType<typeof getApiKeysFor
     limitWeeklyUsd: item.limitWeeklyUsd,
     limitMonthlyUsd: item.limitMonthlyUsd,
     limitTotalUsd: item.limitTotalUsd,
-    limitConcurrentSessions: item.limitConcurrentSessions,
+    limitConcurrentSessions: effectiveConcurrentSessions,
     providerGroup: item.providerGroup,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
     created_at: item.createdAt,
     updated_at: item.updatedAt,
-    isPrimary: item.key === cdk.localApiKey,
-    is_primary: item.key === cdk.localApiKey,
-    usage
+    isPrimary,
+    is_primary: isPrimary,
+    usage: isPrimary
+      ? {
+          ...usage,
+          concurrentSessions: {
+            ...usage.concurrentSessions,
+            limit: effectiveConcurrentSessions
+          }
+        }
+      : usage
   };
 }
 
@@ -1596,7 +1613,7 @@ async function resolveCdkQuotaState(db: Db, cdk: Cdk): Promise<ResolvedCdkQuotaS
   let weeklyUsedUsd: number | null = null;
   let monthlyUsedUsd = quotas.monthly.usedUsd;
   let totalUsedUsd = quotas.total.usedUsd;
-  let limitConcurrentSessions = template.concurrentSessions;
+  let limitConcurrentSessions = template.concurrentSessions ?? DEFAULT_CONCURRENT_SESSIONS;
   let partialErrors: Array<{ scope: string; message: string }> = [];
 
   if (getUpstreamMode() === "sub2api" && cdk.sub2apiUserId != null) {
@@ -1606,7 +1623,7 @@ async function resolveCdkQuotaState(db: Db, cdk: Cdk): Promise<ResolvedCdkQuotaS
         dailyUsedUsd = sumNullable(snapshot.subscriptions.map((item) => item.dailyUsageUsd)) ?? dailyUsedUsd;
         weeklyUsedUsd = sumNullable(snapshot.subscriptions.map((item) => item.weeklyUsageUsd));
         monthlyUsedUsd = sumNullable(snapshot.subscriptions.map((item) => item.monthlyUsageUsd)) ?? monthlyUsedUsd;
-        limitConcurrentSessions = template.concurrentSessions ?? snapshot.concurrency ?? DEFAULT_CONCURRENT_SESSIONS;
+        limitConcurrentSessions = snapshot.concurrency ?? template.concurrentSessions ?? DEFAULT_CONCURRENT_SESSIONS;
       } else {
         limitConcurrentSessions = template.concurrentSessions ?? DEFAULT_CONCURRENT_SESSIONS;
       }
@@ -1997,10 +2014,20 @@ function buildLimitHistoryResponse(cdk: Cdk) {
   };
 }
 
-function buildApiKeysResponse(db: Db, cdk: Cdk) {
+function buildApiKeysResponse(
+  db: Db,
+  cdk: Cdk,
+  options?: { effectivePrimaryConcurrentSessions?: number | null }
+) {
   const template = findTemplate(db, cdk.templateId);
   if (!template) return null;
-  const items = getApiKeysForCdk(db, cdk.id).map((item) => serializeApiKey(db, cdk, item));
+  const effectivePrimaryConcurrentSessions =
+    options?.effectivePrimaryConcurrentSessions ?? template.concurrentSessions ?? DEFAULT_CONCURRENT_SESSIONS;
+  const items = getApiKeysForCdk(db, cdk.id).map((item) =>
+    serializeApiKey(db, cdk, item, {
+      effectiveConcurrentSessions: effectivePrimaryConcurrentSessions
+    })
+  );
   return {
     ok: true,
     data: {
@@ -2015,7 +2042,7 @@ function buildApiKeysResponse(db: Db, cdk: Cdk) {
         limitWeeklyUsd: template.weeklyQuotaUsd,
         limitMonthlyUsd: cdk.effectiveMonthlyQuotaUsd,
         limitTotalUsd: cdk.effectiveTotalQuotaUsd,
-        limitConcurrentSessions: template.concurrentSessions
+        limitConcurrentSessions: effectivePrimaryConcurrentSessions
       },
       items
     }
@@ -3133,7 +3160,17 @@ app.get("/api/redeem/:cdk/api-keys", (req, res) => {
     res.status(404).json({ message: "模板不存在" });
     return;
   }
-  res.json(payload);
+  void resolveCdkQuotaState(db, cdk)
+    .then((quotaState) => {
+      res.json(
+        buildApiKeysResponse(db, cdk, {
+          effectivePrimaryConcurrentSessions: quotaState?.limitConcurrentSessions ?? payload.data.primaryLimits.limitConcurrentSessions
+        })
+      );
+    })
+    .catch(() => {
+      res.json(payload);
+    });
 });
 
 app.post("/api/redeem/:cdk/api-keys", (req, res) => {
