@@ -1023,10 +1023,8 @@ function getActiveSessionDisplay(summary: UsageSummaryResponse["data"]) {
   return "未返回";
 }
 
-function getSessionLimitDisplay(detail: RedeemDetail | null, summary: UsageSummaryResponse["data"]) {
-  const templateLimit = detail?.template?.concurrent_sessions ?? detail?.template?.concurrentSessions ?? null;
-  const derivedLimit = summary.limitConcurrentSessions ?? templateLimit;
-  return derivedLimit != null ? formatInteger(derivedLimit) : "未限制";
+function getSessionLimitDisplay(_detail: RedeemDetail | null, summary: UsageSummaryResponse["data"]) {
+  return summary.limitConcurrentSessions != null ? formatInteger(summary.limitConcurrentSessions) : "未返回";
 }
 
 function getRpmDisplay(detail: RedeemDetail | null, summary: UsageSummaryResponse["data"]) {

@@ -2049,6 +2049,17 @@ function buildApiKeysResponse(
   };
 }
 
+async function buildEffectiveApiKeysResponse(db: Db, cdk: Cdk) {
+  const payload = buildApiKeysResponse(db, cdk);
+  if (!payload) return null;
+
+  const quotaState = await resolveCdkQuotaState(db, cdk);
+  return buildApiKeysResponse(db, cdk, {
+    effectivePrimaryConcurrentSessions:
+      quotaState?.limitConcurrentSessions ?? payload.data.primaryLimits.limitConcurrentSessions
+  });
+}
+
 function buildCatalogResponse(req: Request) {
   const db = readDb();
   return {
@@ -3160,22 +3171,18 @@ app.get("/api/redeem/:cdk/api-keys", (req, res) => {
     res.status(404).json({ message: "模板不存在" });
     return;
   }
-  void resolveCdkQuotaState(db, cdk)
-    .then((quotaState) => {
-      res.json(
-        buildApiKeysResponse(db, cdk, {
-          effectivePrimaryConcurrentSessions: quotaState?.limitConcurrentSessions ?? payload.data.primaryLimits.limitConcurrentSessions
-        })
-      );
+  void buildEffectiveApiKeysResponse(db, cdk)
+    .then((effectivePayload) => {
+      res.json(effectivePayload ?? payload);
     })
     .catch(() => {
       res.json(payload);
     });
 });
 
-app.post("/api/redeem/:cdk/api-keys", (req, res) => {
+app.post("/api/redeem/:cdk/api-keys", async (req, res) => {
   try {
-    const payload = updateDb((db) => {
+    updateDb((db) => {
       const cdk = findCdkByCode(db, req.params.cdk);
       if (!cdk) throw new Error("CDK 不存在");
       if (cdk.disabled || cdk.rechargeTargetCode) {
@@ -3192,17 +3199,22 @@ app.post("/api/redeem/:cdk/api-keys", (req, res) => {
         limitTotalUsd: numberOrNull(req.body?.limit_total_usd),
         limitConcurrentSessions: numberOrNull(req.body?.limit_concurrent_sessions)
       });
-      return buildApiKeysResponse(db, cdk);
     });
+
+    const db = readDb();
+    const cdk = findCdkByCode(db, req.params.cdk);
+    if (!cdk) throw new Error("CDK 不存在");
+    const payload = await buildEffectiveApiKeysResponse(db, cdk);
+    if (!payload) throw new Error("模板不存在");
     res.json(payload);
   } catch (error) {
     res.status(400).json({ message: error instanceof Error ? error.message : "创建子 Key 失败" });
   }
 });
 
-app.patch("/api/redeem/:cdk/api-keys/:id", (req, res) => {
+app.patch("/api/redeem/:cdk/api-keys/:id", async (req, res) => {
   try {
-    const payload = updateDb((db) => {
+    updateDb((db) => {
       const cdk = findCdkByCode(db, req.params.cdk);
       if (!cdk) throw new Error("CDK 不存在");
       const apiKey = findApiKeyById(db, req.params.id);
@@ -3226,17 +3238,22 @@ app.patch("/api/redeem/:cdk/api-keys/:id", (req, res) => {
         limitTotalUsd: numberOrNull(req.body?.limit_total_usd),
         limitConcurrentSessions: numberOrNull(req.body?.limit_concurrent_sessions)
       });
-      return buildApiKeysResponse(db, cdk);
     });
+
+    const db = readDb();
+    const cdk = findCdkByCode(db, req.params.cdk);
+    if (!cdk) throw new Error("CDK 不存在");
+    const payload = await buildEffectiveApiKeysResponse(db, cdk);
+    if (!payload) throw new Error("模板不存在");
     res.json(payload);
   } catch (error) {
     res.status(400).json({ message: error instanceof Error ? error.message : "更新子 Key 失败" });
   }
 });
 
-app.post("/api/redeem/:cdk/api-keys/:id/enabled", (req, res) => {
+app.post("/api/redeem/:cdk/api-keys/:id/enabled", async (req, res) => {
   try {
-    const payload = updateDb((db) => {
+    updateDb((db) => {
       const cdk = findCdkByCode(db, req.params.cdk);
       if (!cdk) throw new Error("CDK 不存在");
       const apiKey = findApiKeyById(db, req.params.id);
@@ -3244,25 +3261,35 @@ app.post("/api/redeem/:cdk/api-keys/:id/enabled", (req, res) => {
       if (apiKey.key === cdk.localApiKey) throw new Error("主 Key 不支持禁用");
       apiKey.isEnabled = req.body?.is_enabled !== false;
       apiKey.updatedAt = new Date().toISOString();
-      return buildApiKeysResponse(db, cdk);
     });
+
+    const db = readDb();
+    const cdk = findCdkByCode(db, req.params.cdk);
+    if (!cdk) throw new Error("CDK 不存在");
+    const payload = await buildEffectiveApiKeysResponse(db, cdk);
+    if (!payload) throw new Error("模板不存在");
     res.json(payload);
   } catch (error) {
     res.status(400).json({ message: error instanceof Error ? error.message : "更新 Key 状态失败" });
   }
 });
 
-app.delete("/api/redeem/:cdk/api-keys/:id", (req, res) => {
+app.delete("/api/redeem/:cdk/api-keys/:id", async (req, res) => {
   try {
-    const payload = updateDb((db) => {
+    updateDb((db) => {
       const cdk = findCdkByCode(db, req.params.cdk);
       if (!cdk) throw new Error("CDK 不存在");
       const apiKey = findApiKeyById(db, req.params.id);
       if (!apiKey || apiKey.cdkId !== cdk.id) throw new Error("Key 不存在");
       if (apiKey.key === cdk.localApiKey) throw new Error("主 Key 不支持删除");
       deleteChildApiKey(db, apiKey.id);
-      return buildApiKeysResponse(db, cdk);
     });
+
+    const db = readDb();
+    const cdk = findCdkByCode(db, req.params.cdk);
+    if (!cdk) throw new Error("CDK 不存在");
+    const payload = await buildEffectiveApiKeysResponse(db, cdk);
+    if (!payload) throw new Error("模板不存在");
     res.json(payload);
   } catch (error) {
     res.status(400).json({ message: error instanceof Error ? error.message : "删除子 Key 失败" });
